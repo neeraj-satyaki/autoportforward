@@ -62,6 +62,7 @@ func main() {
 		panic("Failed to create proxy forwarder")
 	}
 	pf.Start()
+	mgr.Wait()
 	log.Println("Agent stops")
 	syscall.Unlink("/apf-agent")
 }

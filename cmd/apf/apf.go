@@ -23,8 +23,10 @@ func sigHandler(fn func()) {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt)
 	go func() {
-		<-c
-		fn()
+		for range c {
+			log.Println("Received INT signal")
+			fn()
+		}
 	}()
 }
 
@@ -74,6 +76,7 @@ func main() {
 	}
 
 	// Bootstrap: copy the agent(tar archive) into the container
+	log.Println("Bootstraping")
 	msg, err := bootstrap.Bootstrap(rt, containerId)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to bootstrap: %s", msg))
@@ -105,21 +108,23 @@ func main() {
 		}
 	}
 
+	log.Println("Creating pipe mux server")
 	ms := mux.NewCmdPipeMuxServer(cmd[0], cmd[1:]...)
 	if ms == nil {
 		panic("Failed to create mux server")
 	}
-	sigHandler(func() {
-		ms.Shutdown()
-	})
 
 	printPrelude()
 
+	log.Println("Starting manager")
 	// Open two streams for manager. NB: the order of Accept() is different from Connect() in the remote agent
 	mgrReceivingStream, _ := ms.Accept()
 	mgrSendingStream, _ := ms.Accept()
 	mgr := manager.NewManager(mgrReceivingStream, mgrSendingStream, log, func() {
-		ms.Close()
+		ms.Shutdown()
+	})
+	sigHandler(func() {
+		mgr.Shutdown()
 	})
 
 	pl := proxy.NewProxyListener(ms, log)
@@ -133,9 +138,14 @@ func main() {
 		mgr.UpdatePeerPorts(reversePorts)
 	}
 
+	log.Println("Starting proxy forwarder")
 	pf := proxy.NewProxyForwarder(ms, log)
 	if pf == nil {
 		panic("Failed to create proxy forwarder")
 	}
 	pf.Start()
+
+	log.Println("Waiting")
+	mgr.Wait()
+	log.Println("Byebye")
 }

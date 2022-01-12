@@ -110,5 +110,5 @@ func NewCmdPipeMuxServer(name string, args ...string) *CmdPipeMuxServer {
 }
 
 func (c *CmdPipeMuxServer) Shutdown() error {
-	return c.cmd.Wait()
+	return c.Close()
 }

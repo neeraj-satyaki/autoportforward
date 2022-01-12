@@ -27,6 +27,7 @@ func (p *ProxyForwarder) Start() {
 	for {
 		stream, rport := p.acceptStream()
 		if stream == nil {
+			p.logger.Println("Failed to accept new stream")
 			return
 		}
 		go p.forwardLoop(stream, rport)

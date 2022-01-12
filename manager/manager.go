@@ -38,8 +38,10 @@ type Manager struct {
 	sender       io.ReadWriteCloser
 	cmdCh        chan string
 	lsnCh        chan []uint16
+	shutdownCh   chan struct{}
 	shutdownHook func()
 	once         sync.Once
+	wg           *sync.WaitGroup
 	logger       *log.Logger
 	localPortMap map[uint16]uint16 // target port => local listener port
 	peerPortMap  map[uint16]uint16 // peer's listening ports: target port => peer listener port
@@ -54,8 +56,10 @@ func NewManager(receiver io.ReadWriteCloser, sender io.ReadWriteCloser, logger *
 		sender:       sender,
 		cmdCh:        make(chan string),
 		lsnCh:        make(chan []uint16),
+		shutdownCh:   make(chan struct{}),
 		shutdownHook: shutdownHook,
 		once:         sync.Once{},
+		wg:           &sync.WaitGroup{},
 		logger:       logger,
 		localPortMap: make(map[uint16]uint16),
 		peerPortMap:  make(map[uint16]uint16),
@@ -66,16 +70,19 @@ func NewManager(receiver io.ReadWriteCloser, sender io.ReadWriteCloser, logger *
 }
 
 func (m *Manager) Run() {
+	m.wg.Add(3) // Only wait for the two loops
 	go m.receivingLoop()
 	go m.sendingLoop()
 	go m.healthcheck()
 }
 
 func (m *Manager) receivingLoop() {
+	defer m.wg.Done()
 	buf := make([]byte, CMD_LEN)
 	for {
 		_, err := io.ReadFull(m.receiver, buf)
 		if err != nil {
+			m.logger.Println("exiting receiving loop")
 			m.Shutdown()
 			return
 		}
@@ -126,9 +133,12 @@ func (m *Manager) delPorts(ports []uint16) {
 }
 
 func (m *Manager) sendingLoop() {
+	defer m.wg.Done()
 	buf := make([]byte, CMD_LEN)
 	for cmd := range m.cmdCh {
+		m.logger.Println("====")
 		if cmd == "" {
+			m.logger.Println("exiting sending loop")
 			return
 		}
 		m.sender.Write([]byte(cmd))
@@ -156,9 +166,15 @@ func (m *Manager) sendingLoop() {
 
 // yamux has its own healthcheck implemented, this is kinda redundant.
 func (m *Manager) healthcheck() {
+	defer m.wg.Done()
 	tick := time.NewTicker(5 * time.Second)
 	for range tick.C {
-		m.cmdCh <- PING
+		select {
+		case <-tick.C:
+			m.cmdCh <- PING
+		case <-m.shutdownCh:
+			return
+		}
 	}
 }
 
@@ -246,9 +262,14 @@ func (m *Manager) Shutdown() {
 		m.logger.Println("Shutting down")
 		m.receiver.Close()
 		m.sender.Close()
+		close(m.shutdownCh)
 		close(m.cmdCh)
 		m.shutdownHook()
 	})
+}
+
+func (m *Manager) Wait() {
+	m.wg.Wait()
 }
 
 func DumpToStderr(localPortMap, peerPortMap map[uint16]uint16) {
